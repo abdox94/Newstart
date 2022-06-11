@@ -52,10 +52,22 @@ class UserAttendance(models.Model):
             ('check_in', '<=', self.timestamp),
             '|', ('activity_id', '=', False), ('activity_id', '=', self.activity_id.id),
             ]
+    
+    def _prepare_last_work_entry_domain(self):
+        self.ensure_one()
+        return [
+            ('name', '=', self.employee_id.id),
+            ('date_start', '<=', self.timestamp),
+            '|', ('work_entry_type_id', '=', False), ('work_entry_type_id', '=', self.activity_id.id),
+            ]
 
     def _get_last_hr_attendance(self):
         self.ensure_one()
         return self.env['hr.attendance'].search(self._prepare_last_hr_attendance_domain(), limit=1, order='check_in DESC')
+    
+    def _get_last_work_entry(self):
+        self.ensure_one()
+        return self.env['hr.work.entry'].search(self._prepare_last_work_entry_domain(), limit=1, order='date_start DESC')
 
     def _prepare_hr_attendance_vals(self):
         return {
@@ -64,6 +76,19 @@ class UserAttendance(models.Model):
             'checkin_device_id': self.device_id.id,
             'activity_id': self.activity_id.id,
             }
+            
+    def _prepare_work_entry_vals(self):
+        return {
+            'name': self.employee_id.id,
+            'work_entry_type_id':'Attendance',
+            'date_start': self.timestamp,
+            }
+    
+    def _create_work_entry(self):
+        vals_list = []
+        for r in self:
+            vals_list.append(r._prepare_work_entry_vals())
+        return self.env['hr.work.entry'].create(vals_list)
 
     def _create_hr_attendance(self):
         vals_list = []
@@ -81,17 +106,22 @@ class UserAttendance(models.Model):
                     # https://github.com/Viindoo/tvtmaaddons/pull/4053
                     with self.env.cr.savepoint(flush=False), tools.mute_logger('odoo.sql_db'):
                         last_hr_attendance = uatt._get_last_hr_attendance()
+                        last_work_entry = uatt._get_last_work_entry()
                         try:
                             uatt_update = False
                             if uatt.type == 'checkin':
                                 if not last_hr_attendance or (last_hr_attendance.check_out and uatt.timestamp > last_hr_attendance.check_out):
                                     last_hr_attendance = uatt._create_hr_attendance()
+                                    last_work_entry = uatt._create_work_entry()
                                     uatt_update = True
                             else:
                                 if last_hr_attendance and not last_hr_attendance.check_out and uatt.timestamp >= last_hr_attendance.check_in:
                                     last_hr_attendance.with_context(not_manual_check_out_modification=True).write({
                                         'check_out': uatt.timestamp,
                                         'checkout_device_id': uatt.device_id.id
+                                        })
+                                    last_work_entry.with_context(not_manual_check_out_modification=True).write({
+                                        'date_stop': uatt.timestamp
                                         })
                                     uatt_update = True
                             if uatt_update:
